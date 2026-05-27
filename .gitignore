@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Local config
+.env
+
+# Data and artefacts
+data/*/
+artifacts/
+*.csv
+*.parquet
+!configs/*.yaml
+!**/sample_submission.csv
+
+# Kaggle
+kaggle.json
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
