@@ -1,0 +1,27 @@
+# Core
+openai>=1.40.0
+pydantic>=2.5.0
+pyyaml>=6.0
+tiktoken>=0.7.0
+python-dotenv>=1.0.0
+
+# Classical ML stack
+pandas>=2.1.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+lightgbm>=4.1.0
+catboost>=1.2.0
+
+# NLP support for the disaster-tweets dataset
+scipy>=1.11.0
+
+# Kaggle data acquisition
+kaggle>=1.6.0
+
+# Optional but useful
+faiss-cpu>=1.7.4    # for RAG retrieval; remove if you hand-roll cosine sim
+optuna>=3.5.0       # only if you go the HPO route
+
+# Dev
+pytest>=7.4.0
