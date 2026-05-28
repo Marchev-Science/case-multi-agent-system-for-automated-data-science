@@ -1,34 +1,58 @@
 # Resources
 
-A curated reading list. The first three are the minimum reading before writing any agent code.
+A curated reading list. The first three are the minimum reading before starting.
 
 ## Minimum reading
 
 1. **CRISP-DM 1.0**, the *detailed* version with substeps and loop contours. The Wikipedia article covers the six-phase summary but is too shallow. The original 2000 SPSS / CRISP-DM consortium document (a freely-findable PDF) is the source; any "CRISP-DM detailed reference" that lists all 24 substeps and their outputs is acceptable. The case is organised around these substeps; every agent prompt template references them.
-2. The **OpenAI Python SDK quickstart** — <https://github.com/openai/openai-python>. You will write directly against it.
-3. The **`starter/` scaffold's own README**. It tells you which files are already working and which are TODO-stubs.
+2. The **quickstart for the framework you pick**. CrewAI: <https://docs.crewai.com/quickstart>. LangGraph: <https://langchain-ai.github.io/langgraph/tutorials/introduction/>. About one hour each.
+3. The **`starter/` scaffold's own README**. It tells you which utilities are ready to drop into your framework.
 
-## Why no framework — and what the popular frameworks would have done for you
+## Choosing a framework
 
-The case forbids using a multi-agent framework, but the team should know what it is *not* using:
+The case encourages using a multi-agent framework. Pick the one whose mental model fits your team. A short tour:
 
-| Framework | What it would have done | Why not for this case |
-|---|---|---|
-| **CrewAI** | Role-based agent definitions in Python/YAML, automatic task delegation, shared context. Around 31k stars. | Hides the orchestration. The educational point is to *build* the orchestration. |
-| **LangGraph** | Explicit graph-of-nodes state machine; very production-grade. | Same — and adds a steep learning curve to the no-go. |
-| **AutoGen / AG2** | Conversational multi-agent. | Effectively in maintenance mode; not recommended for new builds. |
-| **OpenClaw** | Self-hosted autonomous-agent runtime; the largest open-source agent project of its kind. Uses Markdown `SKILL.md` files for capabilities. | OpenClaw is a runtime, not a library. You use it to *run* an agent on your machine, not to embed one in a Python application. Wrong shape for this case. |
-| **Hermes Agent** | Open-source agent from Nous Research; strong persistent memory, multi-platform reach, growing multi-agent feature. | Same shape as OpenClaw — operator-facing runtime, not an embeddable library. |
-| **OpenAI Agents SDK** | Vendor-native, minimal. | Closest to "no framework", but still imposes its own loop. Replicating its essential ideas yourself is, in fact, the exercise. |
-| **Pydantic AI** | Type-safe agent primitives. | Tempting and minimal — but **using it counts as using a framework** for this case. You may borrow conceptual ideas from it; you may not import it as your orchestration layer. |
+### CrewAI — recommended default
 
-A useful frame: an industrial team would pick CrewAI and ship in three days. An educational build does the same thing from scratch and *understands* the failure modes of every layer.
+- **Mental model**: roles, goals, tools, and tasks. You define `Agent`s with role/goal/backstory, give them `Task`s with descriptions and expected outputs, and run them as a `Crew` with a `Process` (sequential or hierarchical).
+- **Why it fits this case**: the role abstraction maps 1:1 onto the five CRISP-DM agents. The hierarchical process maps onto the PM-led hub-and-spoke. Tool integration is straightforward.
+- **Docs**: <https://docs.crewai.com>
+- **Examples worth reading**: the `examples/` folder on GitHub. Look for the multi-agent ones with explicit role + task definitions.
+
+### LangGraph — recommended for explicit-control teams
+
+- **Mental model**: a typed `State`, a graph of nodes, conditional edges. Each node reads from / writes to state. The four CRISP-DM loops are four conditional edges.
+- **Why it fits this case**: the explicit state machine matches the CRISP-DM substep-by-substep walk. You can see exactly when a back-edge fires.
+- **Docs**: <https://langchain-ai.github.io/langgraph/>
+- **Cost**: more code per agent than CrewAI, steeper learning curve.
+
+### OpenAI Agents SDK — minimal vendor SDK
+
+- **Mental model**: agents with tools and handoffs. No heavy framework on top.
+- **Why it fits**: smallest surface to learn. Good if the team is comfortable composing things themselves.
+- **Cost**: less help with multi-agent coordination; you'll write more glue.
+- **Docs**: <https://github.com/openai/openai-agents-python>
+
+### Pydantic AI — type-first
+
+- **Mental model**: agents return strictly-typed Pydantic outputs.
+- **Why it fits**: strong type discipline catches mismatches early; output validation is automatic.
+- **Cost**: younger ecosystem, fewer examples for multi-agent patterns.
+- **Docs**: <https://ai.pydantic.dev/>
+
+### What about AutoGen / AG2?
+
+The original Microsoft AutoGen is in maintenance mode; the community fork AG2 (<https://ag2.ai/>) is where current activity is. If the team wants to use the AutoGen style (conversational agents), check AG2's current status and recent releases before committing.
+
+### Mixing approaches
+
+You can — and probably should — use a framework for the agents and orchestration, plus bring your own small utilities for things the framework doesn't handle well (the CRISP-DM-shaped state, the Kaggle download, a Python execution sandbox). The `starter/` directory in this repo gives you exactly those drop-in utilities.
 
 ## Background — agentic systems
 
 - **ReAct: Synergizing Reasoning and Acting in Language Models** (Yao et al., 2022). Short, foundational, still worth reading. <https://arxiv.org/abs/2210.03629>
 - **Reflexion: Language Agents with Verbal Reinforcement Learning** (Shinn et al., 2023). Relevant to the Validator's "try to find a problem" mandate.
-- A recent multi-agent-system survey (e.g. from DataCamp, Lindy, or any 2025–2026 comparison). Useful as background even though you're not using them.
+- Any recent (2025–2026) multi-agent-system survey for context.
 
 ## Background — automated data science
 
@@ -43,30 +67,21 @@ A useful frame: an industrial team would pick CrewAI and ship in three days. An 
   - House Prices: Pedro Marcelino's "Comprehensive Data Exploration" is the canonical EDA reference; consider RAG-seeding it.
   - Disaster Tweets: the official Kaggle tutorial notebook is a fine baseline reference.
 
-## Tools and libraries
+## Libraries you'll likely want
 
-Allowed without question (these are not "frameworks"):
+The scaffold's `requirements.txt` covers the basics. Beyond your chosen framework:
 
-- `openai` — the SDK. Used for both OpenAI and DeepSeek (the latter is OpenAI-API-compatible).
+- `openai` — used for both OpenAI and DeepSeek (the latter is OpenAI-API-compatible).
 - `pydantic`, `pyyaml` — typed config and state.
 - `pandas`, `numpy`, `scikit-learn`, `xgboost`, `lightgbm`, `catboost` — classical ML.
 - `tiktoken` — token counting for cost accounting.
-- `faiss-cpu` or hand-rolled cosine similarity in numpy — RAG retrieval.
+- `faiss-cpu` or hand-rolled cosine similarity in numpy — for RAG retrieval if your framework doesn't ship one.
 - `optuna` — hyperparameter search if you go there.
 - `pytest` — testing.
 - `kaggle` — the official CLI for data download.
-
-Not in keeping with the from-scratch spirit of the case (avoid using these as the orchestration layer):
-
-- `crewai`, `langgraph`, `langchain`, `autogen`, `pyautogen`, `pydantic-ai`, `instructor` (when used as an agent framework), or any other published multi-agent framework.
-
-Acceptable but discouraged:
-
-- `litellm` for multi-provider routing. Tempting, but the scaffold's small `llm.py` does what you need without the dependency. Use it only if there's a specific reason.
-- A vector-DB service (Pinecone, Weaviate). Overkill for the corpus size.
 
 ## What not to bother with
 
 - Building a Streamlit / Gradio UI. Not part of the deliverable.
 - Fine-tuning a transformer on Disaster Tweets. Burns budget for marginal gain.
-- A 200-line config-validation library. Skip the nice-to-haves.
+- Rolling your own agent framework when established ones exist. *That is exactly what this case asks you not to do.*

@@ -1,68 +1,65 @@
-# Starter scaffold
+# Starter — drop-in utilities
 
-This is a minimal, runnable skeleton. It boots, loads a config, calls the LLM, and walks an empty state machine. None of the **agents do anything yet**. That part is your job.
+This directory provides a small set of utilities you can drop into whichever multi-agent framework you pick (CrewAI, LangGraph, OpenAI Agents SDK, etc.). It is **not** a fill-in-the-blanks skeleton; the multi-agent orchestration itself is something your framework provides for free.
 
-## What's done for you
+## What's here
 
-| File | Status | What it gives you |
+| File | What it gives you | Use it for |
 |---|---|---|
-| `maads/__main__.py` | ✅ Working | CLI: `python -m maads run --case <name>` or `--config <path>` |
-| `maads/config.py` | ✅ Working | Loads any `<case>.yaml` into a typed `CaseConfig` |
-| `maads/state.py` | ✅ Working skeleton | Pydantic state with nested phase models for all 24 CRISP-DM outputs; `view_for(agent)` slicing for token economy |
-| `maads/llm.py` | ✅ Working | Thin wrapper over OpenAI (with optional DeepSeek), retries, per-agent token accounting |
-| `maads/tools.py` | ⚠️ Partial | `PythonExec` is working (subprocess sandbox, captured stdout/stderr, timeout). `FileIO` is working. `RAGRetriever` is a stub. |
-| `maads/orchestrator.py` | 🟥 Stub | The state machine and routing logic are TODOs. |
-| `maads/agents.py` | 🟥 Stubs | `Agent` base class is done. All five concrete agents are stubs, including the Developer's debugging-toolkit methods. |
-| `maads/data_utils.py` | ✅ Working | Generic Kaggle download (any competition slug) + shorthands for the three demonstration cases. |
-| `configs/*.yaml` | ✅ Working | One config per demonstration case. Schema is general; add a fourth by writing a new file. |
-| `tests/test_smoke.py` | ✅ Working | Imports the package and runs a no-op pipeline. |
+| `maads/config.py` | Typed `CaseConfig` loader for any `<case>.yaml`. | Reading per-competition configuration into Python. |
+| `maads/state.py` | A Pydantic `CrispDMState` with one field per CRISP-DM 1.0 reference-model output. | The shared object your agents read from and write to. Compatible with CrewAI's shared context, LangGraph's typed state, etc. |
+| `maads/tools.py` | `PythonExec` (subprocess sandbox with timeout, captured stdout/stderr), `FileIO`, and a stub `RAGRetriever`. | Pass `PythonExec` to your code-running agents as a tool. The Python sandbox is the most expensive utility to get right; this one is small but correct. |
+| `maads/data_utils.py` | Kaggle downloader. `download_kaggle_competition(slug, out)` works for any competition; `download_case_data(case)` is a shorthand for the three demonstration cases. | One command, any competition. |
+| `maads/llm.py` | Minimal OpenAI / DeepSeek wrapper with retries and per-call token accounting. | Optional — most frameworks have their own LLM client. Use this if you want a single thin interface across both providers. |
+| `configs/*.yaml` | One config per demonstration case. Schema is general; add a fourth by writing a new file. | The required-input schema your system will read. |
+| `tests/test_smoke.py` | Smoke tests covering the utilities above. | Sanity check after installation. |
 
-## What you implement
+## What is intentionally **not** here
 
-In order of suggested attack:
-
-1. **`maads/agents.py`** — fill in each agent's `act()` method. Start with `ProjectManagerAgent`, then add the rest in CRISP-DM order. The Developer's debugging stubs (`classify_error`, `propose_fix`, `re_execute`, `repair_json`, `schema_check`) are first-class API methods, not nice-to-haves — implement them as you wire up the other agents, because every other agent's failures land in the Developer.
-2. **`maads/orchestrator.py`** — write the loop that calls `pm.plan()` and dispatches; implement the four loop contours.
-3. **`maads/tools.py`** — implement `RAGRetriever`. Build the corpus from `docs/RESOURCES.md` references and per-case notes.
-4. Add a `SchemaChecker` and (optionally) a `LeakageCheck` tool.
-
-**Before you write your first prompt, read [`../docs/TOKEN_BUDGET.md`](../docs/TOKEN_BUDGET.md).** Cache-friendly prompt structure, state slicing via `state.view_for(agent_name)`, output truncation, and JSON-mode caps are not optional — they're the difference between a small bill and a large one.
+There is no `Agent` base class, no orchestrator loop, no agent stubs. That's the work the framework does for you — defining what an agent is, how they communicate, how the loop runs. If you find yourself wanting to write that code by hand, stop and check whether your framework already provides it (it does). Your time is better spent on prompts, agent roles, and the CRISP-DM mapping.
 
 ## Running it
 
 ```bash
-# 1) Set up
+# 1) Install
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+# add your framework of choice, e.g.:
+pip install crewai
+# or
+pip install langgraph
+
 cp .env.example .env
 # Edit .env with your OPENAI_API_KEY (and optionally DEEPSEEK_API_KEY).
 
-# 2) Download data — one of the bundled demonstration cases, or any
-#    arbitrary Kaggle competition by slug:
+# 2) Download data for a demonstration case, or any Kaggle competition by slug:
 python -m maads data download --case titanic
 python -m maads data download --competition spaceship-titanic
 
-# 3) Run (will currently do nothing useful — that's your job)
-python -m maads run --case titanic
-python -m maads run --config configs/my_new_case.yaml
+# 3) Run the smoke tests
+pytest tests/
+
+# 4) Wire your framework up against these utilities. See ../docs/ARCHITECTURE.md
+#    for what the five agents need.
 ```
 
-## Standardised interface for any Kaggle competition
+The bundled `python -m maads run` command is a placeholder — it loads a config and walks an empty no-op orchestrator that just halts. Once you've wired your framework to do the real work, replace the placeholder body in `maads/__main__.py`'s `cmd_run` with a call into your framework's entry point.
 
-The system is **general**. To point it at a Kaggle competition not in the bundled configs:
+## How to add a fourth Kaggle competition
+
+The system is general. To point it at any Kaggle competition:
 
 1. Write `configs/<name>.yaml` following the same schema as `titanic.yaml` (see `maads/config.py` for the typed schema).
 2. `python -m maads data download --competition <kaggle-slug>`
-3. `python -m maads run --config configs/<name>.yaml`
+3. Run your system with `--config configs/<name>.yaml`.
 
-No agent code changes. If you find yourself wanting to edit an agent to handle a new dataset, lift the concept into the config file or the Domain Expert's RAG corpus instead.
+No agent code should change. If you find yourself wanting to special-case a dataset in an agent, lift the concept into the config file or the Domain Expert's RAG corpus instead.
 
-## A few decisions baked in
+## A few conventions baked in
 
-- **Pydantic v2** is used for state and config. Stick with it for consistency.
+- **Pydantic v2** for state and config. Stick with it.
 - **State is append-only**. Lists in state only get appended to; existing entries aren't mutated. This makes a run replayable.
-- **No agent reads another agent's prompt** — they only read state, via `state.view_for(agent_name)`.
-- **All code execution goes through `PythonExec`.** No `eval()`, no `exec()`. The sandbox captures real tracebacks; agents must learn from them.
-- **The Developer is on-call for every other agent's failures.** Design accordingly.
+- **All code execution goes through `PythonExec`** (or whatever sandbox your framework provides). No `eval()`, no `exec()`. The sandbox captures real tracebacks; agents must learn from them.
+- **No agent reads another agent's prompt** — they only read state. Whatever your framework calls "state", give each agent a minimal slice (see `state.view_for(agent_name)` for one approach).
 
-Read `../docs/ARCHITECTURE.md` before changing the contracts in `state.py` or `agents.py`.
+Read `../docs/ARCHITECTURE.md` and `../docs/TOKEN_BUDGET.md` before doing anything with prompts.

@@ -1,15 +1,16 @@
 """CLI entry point: `python -m maads ...`
 
 Subcommands:
-    run --case <name>                 Shorthand: load configs/<name>.yaml.
-    run --config <path>               Run with a specific config file.
-    data download --case <name>       Shorthand for bundled cases.
+    data download --case <name>         Download a bundled demonstration dataset.
     data download --competition <slug>  Download any Kaggle competition.
+    run --case <name>                   Placeholder; you wire your framework here.
+    run --config <path>                 Placeholder; you wire your framework here.
 
-The system is general — `--case` is just a convenience that looks up
-configs/<name>.yaml. To run on a Kaggle competition not in the bundled
-configs, write a YAML file matching the schema in CaseConfig and use
-`--config`.
+The `run` subcommand currently loads the config and initialises a
+CrispDMState, then prints what the system would have done. It is a
+placeholder. Once you have chosen a multi-agent framework and wired up
+the five agents, replace the body of `cmd_run` below with a call into
+your framework's entry point.
 """
 from __future__ import annotations
 
@@ -20,9 +21,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from maads.config import load_case_config
-from maads.state import CrispDMState
-from maads.orchestrator import Orchestrator
 from maads.data_utils import download_case_data, download_kaggle_competition
+from maads.state import CrispDMState
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,8 +41,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="Directory holding bundled <case>.yaml files. "
                             "Used only when --case is given.")
     p_run.add_argument("--artifact-dir", default="artifacts",
-                       help="Where to write per-run artefacts. "
-                            "A subdirectory named after case_id is created.")
+                       help="Where to write per-run artefacts. A subdirectory "
+                            "named after case_id is created.")
 
     # ── data ───────────────────────────────────────────────────────────
     p_data = sub.add_parser("data", help="Data utilities.")
@@ -53,8 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     g_dl = p_dl.add_mutually_exclusive_group(required=True)
     g_dl.add_argument("--case", help="Shorthand for bundled configs.")
     g_dl.add_argument("--competition",
-                      help="Any Kaggle competition slug (e.g. 'titanic', "
-                           "'spaceship-titanic', 'tabular-playground-series-jan-2026').")
+                      help="Any Kaggle competition slug.")
     p_dl.add_argument("--out-dir", default=None,
                       help="Where to put the data (default: data/<name>/).")
 
@@ -69,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """Placeholder run command.
+
+    Replace this with a call into your multi-agent framework. The shape
+    is:
+        1. Load the config and initialise CrispDMState.
+        2. Hand the state (or a slice of it) to your framework's entry point.
+        3. After the framework returns, dump the final state for inspection.
+    """
     if args.config:
         config_path = args.config
     else:
@@ -84,14 +91,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     artifact_dir = Path(args.artifact_dir) / config.case_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    orch = Orchestrator(state=state, artifact_dir=artifact_dir)
-    final_state = orch.run()
+    state.append_log(
+        agent="cli",
+        message="No framework wired up yet. This is the placeholder run.",
+        level="warn",
+    )
+    state.halted = True
+    state.halt_reason = "no framework wired up"
 
     state_path = artifact_dir / "final_state.json"
-    state_path.write_text(final_state.model_dump_json(indent=2))
+    state_path.write_text(state.model_dump_json(indent=2))
     print(f"Final state written to {state_path}")
-    print(f"Loops fired: {[ev.label for ev in final_state.loop_history]}")
-    print(f"Token spend: {final_state.token_spend}")
+    print("(Placeholder run — wire your multi-agent framework into "
+          "maads/__main__.py:cmd_run to make this do real work.)")
     return 0
 
 

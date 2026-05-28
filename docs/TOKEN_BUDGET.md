@@ -1,6 +1,10 @@
 # Token Budget — How to Not Burn the API Allowance
 
-A naïve multi-agent system burns tokens. With 5 agents, 24 substeps, and 4 loops, the call graph can easily multiply. Read this **before** writing your first agent. The techniques below are listed roughly in order of "biggest savings for least effort". Apply at least the first six from the start.
+A naïve multi-agent system burns tokens. With 5 agents, 24 substeps, and 4 loops, the call graph can easily multiply. Read this **before** writing your first prompt.
+
+Modern multi-agent frameworks handle some of these techniques for you — CrewAI tracks token usage automatically, LangGraph supports streaming and partial state propagation, OpenAI's API does prefix caching transparently. But you still need to design the *prompts* and the *state-passing* so the framework's economy tools can do their job. A prompt that varies in its first 100 tokens will never cache, no matter which framework wraps the call.
+
+The techniques below are listed roughly in order of "biggest savings for least effort". Apply at least the first six from the start.
 
 > **Rule of thumb.** A single end-to-end run on Titanic should fit comfortably under **$0.50** of API spend, and well under 200 000 total tokens. If your numbers blow past this during development, stop and revisit this document before adding more features.
 

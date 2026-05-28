@@ -1,221 +1,190 @@
 # Architecture
 
-This document is a **detailed suggestion**, not a specification. The team is expected to adapt every decision below to its taste and defend the result in the final architecture write-up. What is non-negotiable is that all five (or optionally six) agents and all four CRISP-DM loops are implemented and observable.
+This document is a **design sketch**, not a specification. The team is expected to adapt every decision below to its taste and to the framework it picks, and to defend the result in the final architecture write-up. What is non-negotiable is that all five (or optionally six) agents and all four CRISP-DM loops are implemented and observable.
 
-## 1. The shared state
+The shape of this document changed in the last revision: it used to prescribe a specific Python class hierarchy. Since the case now encourages using a mature multi-agent framework, the prescription moved up a level. We describe **what** each agent does and **what** the shared state looks like; **how** that lands in code is a function of the framework you pick.
 
-Everything the agents share — current phase, current substep, artefacts produced, decisions made, the active back-edge if any — lives in one object. There is no implicit memory. Every agent reads from this object and writes back to it.
+## 1. The shared state — what flows between agents
 
-A suggested shape (Pydantic model; the scaffold ships a working version of this). The naming follows the CRISP-DM 1.0 Reference Model outputs verbatim, so a prompt can reference an output by its canonical name and the code matches:
+Whatever framework you choose, the five agents need a shared notion of "what we know so far". In CrewAI this lives in the `Crew`'s shared context; in LangGraph it is the typed `State` of the graph; in the OpenAI Agents SDK you carry it explicitly via tool calls. The *shape* below is what matters — call it a dict, a dataclass, a pydantic model, a graph state, whatever your framework prefers.
 
-```python
-class CrispDMState(BaseModel):
-    case_id: str                       # arbitrary, comes from the config file
-    config: CaseConfig
-    phase: Phase                       # 1..6
-    substep: str                       # "1.1", "1.2", ..., "6.4"
-    loop_history: list[LoopEvent]      # each entry has label "A" | "B" | "C" | "D"
-    halted: bool
-    halt_reason: str | None
+The naming follows the CRISP-DM 1.0 Reference Model outputs verbatim, so a prompt can reference an output by its canonical name. Suggested shape:
 
-    bu:  BusinessUnderstanding         # 1.1 .. 1.4 outputs
-    du:  DataUnderstanding             # 2.1 .. 2.4 outputs
-    dp:  DataPreparation               # 3.1 .. 3.5 outputs (+ dataset, dataset_description)
-    md:  Modeling                      # 4.1 .. 4.4 outputs (+ models, chosen_model)
-    ev:  Evaluation                    # 5.1 .. 5.3 outputs
-    dep: Deployment                    # 6.1 .. 6.4 outputs (+ submission_path)
+```
+state:
+    case_id, config, phase, substep, loop_history, halted, halt_reason
 
-    log: list[LogEntry]                # append-only; trim before showing to LLM
-    token_spend: dict[str, int]        # per-agent token totals
+    bu — Business Understanding outputs
+        background, business_objectives, business_success_criteria,
+        inventory_of_resources, requirements_assumptions_constraints,
+        risks_and_contingencies, terminology, costs_and_benefits,
+        data_mining_goals, data_mining_success_criteria,
+        project_plan, initial_assessment_of_tools_and_techniques
+
+    du — Data Understanding outputs
+        initial_data_collection_report, data_description_report,
+        data_exploration_report, data_quality_report
+
+    dp — Data Preparation outputs
+        rationale_for_inclusion_exclusion, data_cleaning_report,
+        derived_attributes, generated_records, merged_data,
+        reformatted_data, dataset, dataset_description
+
+    md — Modeling outputs
+        modeling_technique, modeling_assumptions, test_design,
+        models[], chosen_model
+
+    ev — Evaluation outputs
+        assessment_of_dm_results, approved_models,
+        review_of_process, list_of_possible_actions, decision
+
+    dep — Deployment outputs
+        deployment_plan, monitoring_and_maintenance_plan,
+        final_report_path, final_presentation_path,
+        experience_documentation, submission_path
+
+    log[], token_spend{}
 ```
 
-Each nested sub-model has one field per output named in the CRISP-DM reference model. For instance:
+The `starter/` directory ships a typed Pydantic version of this (`starter/maads/state.py`) you can drop in regardless of the framework you pick. Most frameworks will happily accept a Pydantic model as their state object.
 
-```python
-class BusinessUnderstanding(BaseModel):
-    # 1.1 Determine Business Objectives
-    background: str | None
-    business_objectives: str | None
-    business_success_criteria: str | None
-    # 1.2 Assess Situation
-    inventory_of_resources: dict | None
-    requirements_assumptions_constraints: dict | None
-    risks_and_contingencies: list[str]
-    terminology: dict[str, str]
-    costs_and_benefits: dict | None
-    # 1.3 Determine Data Mining Goals
-    data_mining_goals: str | None
-    data_mining_success_criteria: str | None
-    # 1.4 Produce Project Plan
-    project_plan: list[str]
-    initial_assessment_of_tools_and_techniques: dict | None
-```
+Three guidelines around the state:
 
-Three design rules:
-
-- **Append-only logs.** `log`, `loop_history`, and `md.models` only get appended to. This makes a run replayable and inspectable.
-- **No agent reads another agent's prompt.** They only read state. This keeps the agents loosely coupled — any one is swappable.
-- **No agent receives the whole state.** Every agent uses `state.view_for(agent_name)` to get a minimal slice. Sending the entire state to every LLM call burns the token budget — see [`TOKEN_BUDGET.md`](TOKEN_BUDGET.md).
+- **Append-only logs.** `log`, `loop_history`, and `md.models` should only grow during a run. Earlier entries are not mutated. This makes a run replayable and inspectable.
+- **No agent receives the whole state.** Send each agent only the slice it needs. In CrewAI this is a matter of what you put in the `Task` description; in LangGraph, what each node reads from the state. The `starter/` includes a `view_for(agent_name)` helper that returns a minimal slice for each role — see [`TOKEN_BUDGET.md`](TOKEN_BUDGET.md) for why this matters.
+- **Outputs are first-class.** Every CRISP-DM substep produces a named output. The corresponding state field should be filled by the substep's owner. The orchestrator's prereq checks should refuse to dispatch a substep whose inputs haven't been written yet.
 
 ## 2. The agents
 
-Each agent is a Python class implementing two methods: `plan(state) -> Plan` (what would you do next) and `act(state) -> StateDelta` (do it). The `Plan` from `plan()` is what the Project Manager evaluates when deciding whether to let this agent run, whether to fire a loop, or whether to move on.
+The five agents and their CRISP-DM ownership are described in the README. Here we sketch what each one looks like in practice — context, tools, and the kind of prompt that suits the role. Adapt to your framework.
 
 ### 2.1 Project Manager
 
-- **CRISP-DM ownership**: phase transitions, all four loop contours (A, B, C, D). Directly produces 1.4 (Project Plan), 5.2 (Review Process), 5.3 (Determine Next Steps).
-- **Tools**: read state, write phase/substep, query each agent's `plan()`, fire a loop, halt the run.
-- **Inputs**: a minimal state view (`state.view_for("pm")`) containing the current phase/substep, the latest data-quality blockers, the latest model assessment, the loop history, and a trimmed recent log.
-- **Outputs**: a phase-transition decision; a loop-firing decision; a final go/no-go.
-- **Prompt structure** (high level):
-  - Role: "You are the PM of a CRISP-DM run. Your job is to walk the cycle and fire loops when warranted."
-  - Phase rules: the substeps for the current phase, the exit conditions, and the loop conditions copied from the README's loop table.
-  - Decision schema: must return JSON `{action, target_substep, loop_to_phase, reason}`.
-- **Anti-loop guardrails**: hard cap on total phase transitions (e.g. 12). Hard cap on visits to each phase (e.g. 3). The cap fires before the model can talk itself into a fifth try.
+- **Owns**: phase transitions, all four loop contours, plus 1.4 (Project Plan), 5.2 (Review Process), 5.3 (Determine Next Steps).
+- **Context it needs**: current phase/substep, recent log entries (trimmed), latest data-quality blockers, latest model assessment, the loop history.
+- **Tools**: just the LLM, plus the ability to read the shared state and signal a decision back to the orchestrator. No code execution.
+- **Prompt shape**: stable system prompt that lays out the substeps for the current phase, the exit conditions, and the four loop triggers. The user message contains the minimal state view. The model's output is a structured decision: advance / loop_back / halt.
+- **Guardrails**: hard caps on total phase transitions, on visits to any phase, on Loop B iterations. These belong in the orchestrator (or the framework's transition logic) — *not* in the prompt. Asking the model nicely doesn't bound anything.
 
 ### 2.2 Domain Knowledge Expert
 
-- **CRISP-DM ownership**: 1.1, 1.2, 1.3; contributes to 2.1, 2.2, 2.3.
-- **Tools**: RAG retriever over a small corpus (CRISP-DM spec excerpts, problem-specific notes, prior Kaggle write-ups for similar problems); read state; write Business Understanding fields and contribute to Data Understanding.
-- **Prompt structure**:
-  - Role: "You translate a business problem and a dataset into well-formed data-mining goals and hypotheses."
-  - Inputs from state: `config.problem_statement`, `raw_data_paths`, anything the Data Engineer has already put into `du`.
-  - Output schema: structured JSON with each Phase-1 substep filled in, plus a list of typed feature hypotheses for Phase 2.
+- **Owns**: full Business Understanding (1.1–1.3); contributes to Data Understanding (2.1, 2.2, 2.3).
+- **Context it needs**: the problem statement from the config, any feature hints, and anything the Data Engineer has already written to the state.
+- **Tools**: a RAG retriever over a small corpus (CRISP-DM excerpts, problem-specific notes, prior Kaggle write-ups). Most frameworks include a retriever tool you can plug in.
+- **Prompt shape**: "Translate a business problem and a dataset into well-formed data-mining goals and hypotheses." This is the one agent that should be allowed to *speculate* — its job is to generate ideas, not to commit to them.
 
 ### 2.3 Data Engineer
 
-- **CRISP-DM ownership**: full 2.1, 2.2, 2.4 and full 3.1–3.5.
-- **Tools**: Python execution sandbox (already in the scaffold), file IO, schema introspection helpers.
-- **Workflow**:
-  - 2.1: load files according to the paths declared in `config.data`.
-  - 2.2: emit a structured `data_description_report` (shapes, dtypes, missingness, cardinality, simple statistics).
-  - 2.4: produce a `data_quality_report` with two lists, "blockers" and "tolerable". Blockers trigger Loop A.
-  - 3.x: write the cleaned `train.parquet` and `test.parquet`. 3.3 Construct is where most feature engineering happens.
-- **Hard rule**: every code block the Data Engineer emits must be **executed** by the Python sandbox; the agent only commits to state what survived execution.
+- **Owns**: full Data Understanding (2.1, 2.2, 2.4) and full Data Preparation (3.1–3.5).
+- **Context it needs**: the raw data paths, the data-mining goals, anything already written to `du` and `dp`.
+- **Tools**: a Python execution sandbox. This is non-negotiable — the agent must actually run pandas, not "imagine" it has. Frameworks differ in what they ship: CrewAI has tools for code execution; LangGraph nodes can call any Python function directly. Either way, the rule holds: only commit to state what survived execution.
+- **Prompt shape**: "Profile, clean, and prepare data for modelling. Your outputs are structured reports, not free-form prose."
 
 ### 2.4 Data Scientist
 
-- **CRISP-DM ownership**: contributes to 2.3 (modelling-lens EDA); owns 4.1–4.4 and 5.1.
+- **Owns**: a modelling-lens contribution to 2.3 (Explore Data); full Modeling (4.1–4.4); validation in 4.4 and 5.1 unless a separate Validator is introduced.
+- **Context it needs**: data-mining goals, the prepared dataset paths, the data description report, recent model attempts, the test design.
 - **Tools**: Python sandbox with sklearn, xgboost, lightgbm, catboost.
-- **Workflow**:
-  - 4.1: pick a modelling technique from a constrained menu, with a justification logged.
-  - 4.2: produce a test design (e.g. 5-fold stratified CV for classification, 5-fold KFold for regression, plus a held-out final score). The test design is stored in state and *re-used* across the inner loop.
-  - 4.3 / 4.4: train, score on the test design, append `ModelRun` records to `md.models`. The PM decides whether Loop B fires; this agent does not.
+- **Prompt shape**: "Pick one technique from a constrained menu, justify the choice, build, score on the test design. On poor performance, write a concrete diagnostic — do not silently keep trying more models."
 - **Constraint**: cap inner-loop iterations at three to keep token cost bounded.
 
 ### 2.5 Developer
 
-- **CRISP-DM ownership**: cross-cutting through 2–5; full 6.1–6.4.
-- **Tools**: Python sandbox, file IO, packaging, plus the debugging toolkit described below.
-- **Workflow during Phases 2–5**: writes whatever utility code other agents need (a custom encoder, a feature builder, an integration helper) and — critically — **handles errors** when other agents' code fails to execute.
-- **Workflow during Phase 6**:
-  - 6.1: write the submission file from `chosen_model`'s predictions; validate against the competition's `sample_submission.csv` shape before writing.
-  - 6.2: a short monitoring plan (text — what should be monitored in production).
-  - 6.3: produce `final_report.md` from the state log. This becomes the input to the paper.
-  - 6.4: write the project review (what worked, what didn't), into `dep.experience_documentation`.
+- **Owns**: cross-cutting tool development and debugging through Phases 2–5; full Deployment (6.1–6.4).
+- **Two distinct roles**:
+  1. **Development** during Phases 2–5: writes helper Python that other agents need (custom encoders, feature builders, integration glue, the production pipeline). Called by the orchestrator (or the PM) when another agent's task requires a piece of code beyond a one-liner.
+  2. **Debugging** whenever any agent's code execution fails. This is the on-call responsibility — every other agent's failures surface here. The Developer's prompt should be **diagnose-first**: read the stack trace, classify the error, propose the smallest fix, re-execute. A retry budget of three is usually enough.
+- **Tools**: Python sandbox, file IO, packaging utilities, a JSON-repair helper for fixing malformed agent outputs, a schema checker that verifies column references against the data description report.
+- **Debugging capabilities** (worth listing because they're the most likely to be skipped):
+  - **Error classification** — given stderr, label as schema / shape / type / leakage / library-version / OOM / timeout / syntax / JSON-parse / other.
+  - **Schema check** — given a code snippet, list any column names it references that aren't in `du.data_description_report`.
+  - **Iterative re-execution** — propose a fix, run it, capture the new result, repeat up to N times, then surface as a "stuck on substep" diagnostic.
+  - **JSON repair** — strip Markdown fencing, fix unbalanced braces, escape control characters, then re-parse.
+  - In CrewAI, these are just tools you attach to the Developer agent. In LangGraph, they're functions called from the Developer's node.
 
-#### Debugging toolkit
-
-When any agent's `PythonExec` call fails, the Developer is invoked to diagnose. Build at least these capabilities:
-
-1. **Error classifier** — given stderr from a failed `PythonExec`, classify into one of: schema error (column not found, wrong dtype), shape/dimension error (sklearn shape mismatch), leakage signal, library version mismatch, OOM, timeout, syntax error, JSON-output-parse error, "other". Each category has a known fix template.
-2. **Schema check** — given a code snippet and `state.du.data_description_report`, verify every column referenced exists in the schema; emit a list of unresolved names.
-3. **Iterative re-execution** — given a failure, propose a fix, re-run, capture the new outcome. Cap at three attempts per call; on the third failure, surface the issue to the PM as a stuck-on-substep diagnostic so the PM can decide to fire Loop B or halt.
-4. **JSON repair** — when another agent's structured output fails to parse, attempt a single repair (trim Markdown fencing, fix unbalanced braces, escape quoted strings). On failure, request a re-emission with a stricter prompt.
-5. **Bisection** — when a pipeline produces wrong-looking numbers, the Developer can run the pipeline up to step N and compare with a reference (e.g. shape-check at every step). Useful for catching silent feature-engineering bugs.
-
-The Developer is the agent that prevents "five agents each fail in their own way" from turning into ten interacting failure modes. Without it, the others must each handle their own errors, and they will not handle them as well.
+The Developer is the agent that prevents "five agents each fail in their own way" from turning into ten interacting failure modes. Without it, every other agent has to handle errors itself, and they will not handle them as well.
 
 ### 2.6 Optional sixth: Validator
 
-If the team chooses a 6-agent design, the Validator owns 4.4 and 5.1 separately, with its own context, its own prompt template, and an adversarial mandate ("try to reject"). The Data Scientist then loses 4.4/5.1 ownership. This is the "two-keys-to-launch" pattern; it reduces silent failures, at the cost of one more agent's worth of prompt engineering.
+If the team chooses a 6-agent design, the Validator owns 4.4 and 5.1 separately, with its own context, its own prompt template, and an adversarial mandate ("try to reject"). The Data Scientist then loses 4.4/5.1 ownership. This is the "two-keys-to-launch" pattern — it reduces silent failures, at the cost of one more agent's worth of prompt engineering.
 
-## 3. The orchestrator and the loop contours
+## 3. The orchestrator and the four loops
 
-The PM doesn't itself execute Phases 1–6 — it invokes the responsible agent and reads what they wrote into state. The control loop is roughly:
+The Project Manager doesn't itself execute the substeps — it decides which substep is next and who should run it. The framework you pick provides the actual orchestration; your job is to encode the CRISP-DM-specific decisions:
 
-```
-while not state.halted:
-    plan = pm.plan(state)              # PM looks at state, decides next move
-    if plan.action == "halt":
-        break
-    if plan.action == "advance":
-        next_agent = router(plan.target_substep)
-        next_agent.act(state)
-    elif plan.action == "loop_back":
-        state.record_loop(label, from_phase, to_phase, reason)
-        state.phase = plan.target_phase
-    if hard_limits_exceeded(state):
-        force_halt(state)
-```
-
-The `router` is a tiny mapping from "substep ID" to "which agent owns this substep" (drawn from the table in the README). It is *not* an LLM call — it's a lookup.
+- **Which agent owns which substep.** A small lookup table. Some frameworks (CrewAI) let you define this declaratively via the `Task → Agent` binding.
+- **What "done enough" means for each phase.** A function of the substep's expected outputs being present in state.
+- **When each loop fires.** The triggers in the README's loop table become conditional transitions in the orchestrator.
+- **Hard caps that bound the system.** Total phase transitions, visits per phase, iterations of Loop B.
 
 ### Implementing the four loops
 
-The loop labels match the README diagram (Loop A, B, C, D).
-
-| Loop | Trigger | Implementation |
+| Loop | Trigger | Implementation (concept) |
 |---|---|---|
-| **A — 2 → 1** | After 2.4, if `state.du.data_quality_report["blockers"]` is non-empty, or if Domain Expert hypotheses are contradicted by the actual schema in `state.du.data_description_report` | PM calls `state.record_loop(label="A", from_phase=2, to_phase=1, reason=...)` and sets `state.phase=1, state.substep="1.3"`. Domain Expert re-runs 1.3 only, not the full Phase 1. |
-| **B — 4 → 3** | After 4.4, if the latest `ModelRun.assessment` flags a specific preparation deficit *and* CV score is below threshold | PM records `LoopEvent(label="B", ...)` and sets `state.phase=3` at the affected substep (often 3.3 Construct). Cap: 3 iterations. |
-| **C — 5 → 1** | After 5.1, if `state.ev.assessment_of_dm_results` indicates the business success criterion is not met *and* Loop A has not already fired twice | PM records `LoopEvent(label="C", ...)` and sets `state.phase=1, state.substep="1.3"`. Triggers a fundamental rethink of data-mining goals. |
-| **D — 6 → 1** | Optional, stretch goal | After 6.4, the experience documentation is appended to the *next dataset*'s RAG corpus. Implements cross-dataset learning. |
+| **A — 2 → 1** | After 2.4, if `du.data_quality_report["blockers"]` is non-empty, or if Domain Expert hypotheses are contradicted by the actual schema | The PM emits a "loop A" decision; the orchestrator routes back to substep 1.3. Domain Expert re-runs *only* 1.3, not the full Phase 1. |
+| **B — 4 → 3** | After 4.4, if the latest `ModelRun.assessment` flags a specific preparation deficit *and* CV score is below threshold | Route back to the affected substep of Phase 3. Cap at three iterations. |
+| **C — 5 → 1** | After 5.1, if business success criteria are not met *and* Loop A has not already fired twice | Route back to 1.3. Triggers a fundamental rethink of data-mining goals. |
+| **D — 6 → 1** | After 6.4 (optional, stretch goal) | The experience documentation is appended to the *next dataset*'s RAG corpus. Implements cross-dataset learning. |
 
-A run that fires zero loops on Titanic but at least one loop on House Prices or Disaster Tweets is a sign the system is actually thinking, not just executing.
+A run that fires zero loops on Titanic but at least one on House Prices or Disaster Tweets is a sign the system is actually thinking, not just executing.
 
-## 4. Tools
+In **CrewAI**, loops manifest as conditional task hand-offs — the PM agent's task returns a structured decision that the orchestration code reads to decide which task to schedule next. In **LangGraph**, loops are first-class: a conditional edge from the PM node back to a Phase-3 (or Phase-1) entry node, with the condition read from the state.
 
-You will build / wire up roughly:
+## 4. Tools the agents need
 
-| Tool | Status in scaffold | Purpose |
+Roughly:
+
+| Tool | Status in `starter/` | Purpose |
 |---|---|---|
-| `PythonExec` | **Working.** Subprocess-based, captures stdout/stderr, enforces timeout. | Sole way agents touch data. |
-| `LLM` | **Working.** Thin wrapper over OpenAI / DeepSeek with retries and per-agent cost accounting. | Sole way agents call the model. |
-| `FileIO` | **Working.** Read/write helpers under a per-run artifact directory. | Persisting reports, model artefacts, submissions. |
-| `RAGRetriever` | **Stubbed.** Empty class; the team builds the indexer and retriever. | Domain Expert's grounding. |
-| `SchemaChecker` | **Not present.** | Validates that any column referenced in agent output actually exists in the data. *Recommended early.* |
-| `LeakageCheck` | **Not present.** | Validator-side; detects target leakage and train/test contamination. |
-| `ErrorClassifier` | **Not present.** | Developer-side; categorises `PythonExec` failures and proposes fix templates. |
-| `KaggleClient` | **Not present.** | Optional: submit and read back the public-leaderboard score. The Kaggle CLI is enough; wrapping it as a tool is a nice-to-have. |
+| Python execution sandbox | **Working** (`PythonExec` in `tools.py`) | Sole way agents touch data. |
+| LLM client wrapper | **Working** (`llm.py`) | OpenAI / DeepSeek under one interface. Your framework probably has its own — use whichever fits. |
+| File IO helpers | **Working** (`FileIO`) | Persisting reports, model artefacts, submissions. |
+| RAG retriever | **Stub** (`RAGRetriever`) | Domain Expert's grounding. Most frameworks have a built-in retriever you can use instead. |
+| Schema checker | Not in scaffold | Validates that any column referenced in agent output actually exists in the data. Strongly recommended. |
+| Leakage check | Not in scaffold | Validator-side; detects target leakage and train/test contamination. |
+| Error classifier | Not in scaffold | Developer-side; categorises failed `PythonExec` calls and proposes fix templates. |
+| Kaggle client | Not in scaffold | Optional: submit and read back the public-leaderboard score. The Kaggle CLI is usually enough. |
 
 ## 5. Communication pattern
 
-For the first working version, use a **hub-and-spoke** pattern: agents only talk to / through the PM. Agents do not call each other directly. This makes the system easy to debug (every transition is logged in one place) and easy to reason about (only the PM fires loops).
+For the first working version, use **hub-and-spoke**: agents only talk to / through the PM. Agents do not call each other directly. This makes the system easy to debug (every transition is logged in one place) and easy to reason about (only the PM fires loops).
+
+CrewAI defaults to a process-based hub-and-spoke (the `Process.sequential` and `Process.hierarchical` patterns). LangGraph lets you draw whatever shape you want; start simple.
 
 If, after the first end-to-end pipeline works, the team wants to experiment with peer-to-peer (e.g. Data Engineer ↔ Data Scientist negotiating feature engineering directly), do it on a branch and keep the hub-and-spoke version on `main`.
 
 ## 6. Cost budget
 
-Token-economy details live in [`TOKEN_BUDGET.md`](TOKEN_BUDGET.md) — read it before writing the first prompt. Quick caps to enforce in code from the start:
+Token-economy details live in [`TOKEN_BUDGET.md`](TOKEN_BUDGET.md). Read it before writing your first prompt. Quick caps to enforce in code from the start:
 
 - Cap total LLM calls per dataset run at ~150.
-- Cap PM calls at ~30.
+- Cap PM calls at ~30 (they use the most expensive model).
 - Cap Loop B (4 → 3) iterations at 3.
 - Cap any single agent call's output at ~2000 tokens.
-- Use a mid-tier model for Data Engineer and Developer; reserve top-tier for PM and (optional) Validator.
+- Use a mid-tier model for Data Engineer and Developer; reserve top-tier for PM and (optional) Validator. CrewAI lets you set `llm` per-agent; LangGraph lets you choose per-node.
 
 ## 7. Failure modes (read before you start coding)
 
 These are the bugs you will hit. They are not rare:
 
-- **Hallucinated columns.** The modeller writes `df["FamilySize"]` where no such column exists. Mitigation: a `SchemaChecker` tool, called by the Developer or Validator before any model is fit.
-- **Train/test leakage.** Encoder/scaler fit on train+test concatenated. Mitigation: enforce sklearn `Pipeline` shape in the Data Scientist's prompt; check independently with a "first-half vs second-half" sanity test.
-- **Submission schema mismatch.** Wrong column names, dtype, or row count. Mitigation: the Developer validates the final `submission.csv` against the competition's `sample_submission.csv` *as schema* before writing.
+- **Hallucinated columns.** The modeller writes `df["FamilySize"]` where no such column exists. Mitigation: a schema checker tool the Developer or Validator calls before any model is fit.
+- **Train/test leakage.** Encoder/scaler fit on train+test concatenated. Mitigation: enforce sklearn `Pipeline` shape in the Data Scientist's prompt; an independent "first-half vs second-half" sanity test.
+- **Submission schema mismatch.** Wrong column names, dtype, or row count. Mitigation: validate the final `submission.csv` against the competition's `sample_submission.csv` *as schema* before writing.
 - **Infinite replanning loops.** The PM bounces between phases 3 and 4 forever. Mitigation: hard caps on phase visits and on each loop contour, enforced in the orchestrator.
-- **Cost runaway.** A single run accidentally costs many dollars. Mitigation: per-run token cap enforced in `llm.py`, not just requested in the prompt.
-- **Agent-writes-pseudocode.** Code that "looks right" but doesn't run. Mitigation: every agent that emits code must execute it through `PythonExec` and report the captured output, not the generated text.
-- **Phase-jumping.** Data Scientist starts modelling without waiting for Data Preparation to finish. Mitigation: the router refuses to dispatch to an agent for a substep whose prerequisites aren't satisfied in state.
-- **JSON-output-parse failures.** A model occasionally returns text wrapped in Markdown fencing, with trailing commas, or with control characters. Mitigation: the Developer's JSON-repair routine, plus `response_format={"type":"json_object"}` on every structured call.
+- **Cost runaway.** A single run accidentally costs many dollars. Mitigation: per-run token cap enforced in code, not just requested in the prompt.
+- **Agent-writes-pseudocode.** Code that looks right but doesn't run. Mitigation: every agent that emits code must execute it through the Python sandbox and report the captured output, not the generated text.
+- **Phase-jumping.** Data Scientist starts modelling without waiting for Data Preparation to finish. Mitigation: the orchestrator refuses to dispatch to an agent for a substep whose prerequisites aren't satisfied.
+- **JSON-output-parse failures.** A model occasionally returns text wrapped in Markdown fencing, with trailing commas, or with control characters. Mitigation: the Developer's JSON-repair routine plus a strict output mode in your framework / API.
 
 ## 8. What the final architecture write-up must contain
 
-The architecture document you submit alongside the code must include:
+The architecture document you submit alongside the code should include:
 
 1. A diagram showing your agents, their tools, and the message flow.
-2. For each agent: ownership in CRISP-DM, prompt template, inputs and outputs in terms of state fields.
-3. The state schema you actually used.
-4. How each of the four loop contours is implemented in code.
-5. The LLM model assigned to each agent (and provider — OpenAI or DeepSeek) and why.
-6. A failure-modes log: what broke, how you knew, what you did about it. **This is the most important section.** An honest one-page failure log beats a five-page success story.
-7. A reproducibility appendix: exact commands to run on a fresh checkout.
+2. **Framework choice and why** — what you picked and what the alternatives would have cost.
+3. For each agent: ownership in CRISP-DM, prompt template, inputs and outputs in terms of state fields, tools attached.
+4. The state schema you actually used (whatever the framework calls it).
+5. How each of the four loop contours is implemented (as conditional transitions, task hand-offs, whatever).
+6. The LLM model assigned to each agent and provider (OpenAI vs DeepSeek) and why.
+7. **A failure-modes log** — what broke, how you knew, what you did about it. The most important section. An honest one-page failure log beats a five-page success story.
+8. A reproducibility appendix: exact commands to run on a fresh checkout.
