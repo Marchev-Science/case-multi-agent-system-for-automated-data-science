@@ -78,7 +78,8 @@ The scaffold's `requirements.txt` covers the basics. Beyond your chosen framewor
 - `faiss-cpu` or hand-rolled cosine similarity in numpy — for RAG retrieval if your framework doesn't ship one.
 - `optuna` — hyperparameter search if you go there.
 - `pytest` — testing.
-- `kaggle` — the official CLI for data download.
+- `kaggle` — the official CLI for data download.  
+- openshell by nVidia - sandboxing for agents
 
 ## What not to bother with
 
